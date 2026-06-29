@@ -1,0 +1,110 @@
+// Code your design here
+// baud_gen.v
+// Divides system clock to produce a 1-cycle pulse at baud rate
+// For 50 MHz clk and 9600 baud: DIVISOR = 50_000_000 / 9600 = 5208
+git add .
+module baud_gen #(
+    parameter DIVISOR = 5208
+)(
+    input  wire clk,
+    input  wire rst_n,
+    output reg  baud_tick
+);
+    integer cnt;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            cnt       <= 0;
+            baud_tick <= 0;
+        end else if (cnt == DIVISOR - 1) begin
+            cnt       <= 0;
+            baud_tick <= 1;
+        end else begin
+            cnt       <= cnt + 1;
+            baud_tick <= 0;
+        end
+    end
+endmodule
+
+// uart_tx.v
+// UART 8N1 transmitter: 8 data bits, no parity, 1 stop bit
+
+module uart_tx #(
+    parameter DIVISOR = 5208
+)(
+    input  wire       clk,
+    input  wire       rst_n,
+    input  wire [7:0] data_in,
+    input  wire       start,
+    output reg        tx_out,
+    output reg        tx_busy
+);
+
+    // ---------- Baud Rate Generator ----------
+    wire baud_tick;
+    baud_gen #(.DIVISOR(DIVISOR)) u_baud (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .baud_tick(baud_tick)
+    );
+
+    // ---------- FSM ----------
+    localparam IDLE  = 2'd0,
+               START = 2'd1,
+               DATA  = 2'd2,
+               STOP  = 2'd3;
+
+    reg [1:0] state;
+    reg [7:0] shift_reg;
+    reg [2:0] bit_cnt;   // counts 0..7
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state     <= IDLE;
+            tx_out    <= 1'b1;   // idle line is HIGH
+            tx_busy   <= 1'b0;
+            shift_reg <= 8'd0;
+            bit_cnt   <= 3'd0;
+        end else begin
+            case (state)
+
+                IDLE: begin
+                    tx_out  <= 1'b1;
+                    tx_busy <= 1'b0;
+                    if (start) begin
+                        shift_reg <= data_in;
+                        tx_busy   <= 1'b1;
+                        state     <= START;
+                    end
+                end
+
+                START: begin
+                    if (baud_tick) begin
+                        tx_out  <= 1'b0;   // start bit
+                        bit_cnt <= 3'd0;
+                        state   <= DATA;
+                    end
+                end
+
+                DATA: begin
+                    if (baud_tick) begin
+                        tx_out    <= shift_reg[0];   // LSB first
+                        shift_reg <= shift_reg >> 1;
+                        if (bit_cnt == 3'd7)
+                            state <= STOP;
+                        else
+                            bit_cnt <= bit_cnt + 1;
+                    end
+                end
+
+                STOP: begin
+                    if (baud_tick) begin
+                        tx_out  <= 1'b1;   // stop bit
+                        state   <= IDLE;
+                    end
+                end
+
+            endcase
+        end
+    end
+endmodule
